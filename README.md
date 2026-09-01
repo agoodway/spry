@@ -8,15 +8,16 @@ Treat `.spry.yaml` `setup` lines as code you are willing to run inside the VM (M
 
 ## Install
 
-### From a GitHub release (Linux x86-64)
+`sprite` must be on `PATH` for `spry setup` and `spry app`. `spry init` does not need it.
 
-Version tags such as `v0.1.0` publish a static Linux binary and SHA-256 checksum. On the VM, replace `OWNER/REPOSITORY` and the version below with this repository and the release you want:
+### Linux x86-64 (GitHub release)
+
+Version tags such as `v0.1.0` publish a static musl binary and SHA-256 checksum. On a Sprite VM:
 
 ```sh
-REPOSITORY=OWNER/REPOSITORY
 VERSION=v0.1.0
-curl -fLO "https://github.com/$REPOSITORY/releases/download/$VERSION/spry-linux-amd64.tar.gz"
-curl -fLO "https://github.com/$REPOSITORY/releases/download/$VERSION/spry-linux-amd64.tar.gz.sha256"
+curl -fLO "https://github.com/agoodway/spry/releases/download/$VERSION/spry-linux-amd64.tar.gz"
+curl -fLO "https://github.com/agoodway/spry/releases/download/$VERSION/spry-linux-amd64.tar.gz.sha256"
 sha256sum --check spry-linux-amd64.tar.gz.sha256
 tar -xzf spry-linux-amd64.tar.gz
 mkdir -p "$HOME/.local/bin"
@@ -24,15 +25,19 @@ install -m 0755 spry "$HOME/.local/bin/spry"
 spry --version
 ```
 
-Make sure `$HOME/.local/bin` is on `PATH`. A manually dispatched package workflow also produces the same archive as a workflow artifact, without creating a GitHub release.
+Put `$HOME/.local/bin` on `PATH`. A manually dispatched package workflow also produces the same archive as a workflow artifact, without creating a GitHub release.
 
 ### From source
 
 ```sh
-cargo install --path .
+cargo install --git https://github.com/agoodway/spry.git
 ```
 
-`sprite` must be on `PATH` for `spry setup` and `spry app`. `spry init` does not need it.
+Or from a local checkout:
+
+```sh
+cargo install --path .
+```
 
 ## Quick start
 
@@ -50,7 +55,7 @@ spry app start
 
 ```yaml
 name: myapp-{{branch_slug}}
-org: example-org
+org: myorg
 setup:
   - mkdir -p ~/.ssh && ssh-keygen -t ed25519 -N "" -C sprite-example-app -f ~/.ssh/example-app_ed25519
   - host: |
