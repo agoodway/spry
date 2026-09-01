@@ -8,6 +8,26 @@ Treat `.spry.yaml` `setup` lines as code you are willing to run inside the VM (M
 
 ## Install
 
+### From a GitHub release (Linux x86-64)
+
+Version tags such as `v0.1.0` publish a static Linux binary and SHA-256 checksum. On the VM, replace `OWNER/REPOSITORY` and the version below with this repository and the release you want:
+
+```sh
+REPOSITORY=OWNER/REPOSITORY
+VERSION=v0.1.0
+curl -fLO "https://github.com/$REPOSITORY/releases/download/$VERSION/spry-linux-amd64.tar.gz"
+curl -fLO "https://github.com/$REPOSITORY/releases/download/$VERSION/spry-linux-amd64.tar.gz.sha256"
+sha256sum --check spry-linux-amd64.tar.gz.sha256
+tar -xzf spry-linux-amd64.tar.gz
+mkdir -p "$HOME/.local/bin"
+install -m 0755 spry "$HOME/.local/bin/spry"
+spry --version
+```
+
+Make sure `$HOME/.local/bin` is on `PATH`. A manually dispatched package workflow also produces the same archive as a workflow artifact, without creating a GitHub release.
+
+### From source
+
 ```sh
 cargo install --path .
 ```

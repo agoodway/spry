@@ -1,0 +1,83 @@
+name: Package Linux binary
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-musl
+  ARCHIVE: spry-linux-amd64.tar.gz
+
+jobs:
+  package:
+    name: Package spry for Linux x86-64
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Install the musl linker
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
+      - name: Run tests
+        run: cargo test --locked -- --test-threads=1
+
+      - name: Build the static binary
+        run: cargo build --locked --release --target "$TARGET"
+
+      - name: Create the release archive and checksum
+        run: |
+          mkdir -p dist/package
+          install -m 0755 "target/$TARGET/release/spry" dist/package/spry
+          cp README.md dist/package/README.md
+          tar -C dist/package -czf "dist/$ARCHIVE" spry README.md
+          cd dist
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+
+      - name: Upload the workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spry-linux-amd64
+          path: |
+            dist/${{ env.ARCHIVE }}
+            dist/${{ env.ARCHIVE }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish the tagged release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download the packaged binary
+        uses: actions/download-artifact@v4
+        with:
+          name: spry-linux-amd64
+          path: dist
+
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          gh release upload "$GITHUB_REF_NAME" \
+            "dist/$ARCHIVE" \
+            "dist/$ARCHIVE.sha256" \
+            --clobber
