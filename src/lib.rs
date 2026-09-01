@@ -1,8 +1,13 @@
+pub mod app;
 pub mod cli;
 pub mod config;
+pub mod git;
+pub mod host;
 pub mod init;
 pub mod setup;
 pub mod sprite;
+pub mod steps;
+pub mod template;
 
 use anyhow::anyhow;
 

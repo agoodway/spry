@@ -6,12 +6,35 @@ use serde::Deserialize;
 
 use crate::user_error;
 
+/// One setup step: a command inside the sprite, or a command on the host.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum SetupStep {
+    Sprite(String),
+    Host { host: String },
+}
+
+impl SetupStep {
+    pub fn command(&self) -> &str {
+        match self {
+            Self::Sprite(command) => command,
+            Self::Host { host } => host,
+        }
+    }
+
+    pub fn is_host(&self) -> bool {
+        matches!(self, Self::Host { .. })
+    }
+}
+
 /// Parsed recipe after empty-string normalization.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Recipe {
     pub name: Option<String>,
     pub org: Option<String>,
-    pub setup: Vec<String>,
+    pub setup: Vec<SetupStep>,
+    pub start: Vec<SetupStep>,
+    pub stop: Vec<SetupStep>,
 }
 
 /// Recipe plus the file it came from, with flag overrides applied.
@@ -20,7 +43,9 @@ pub struct ResolvedConfig {
     pub path: PathBuf,
     pub name: Option<String>,
     pub org: Option<String>,
-    pub setup: Vec<String>,
+    pub setup: Vec<SetupStep>,
+    pub start: Vec<SetupStep>,
+    pub stop: Vec<SetupStep>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -30,7 +55,11 @@ struct RecipeFile {
     #[serde(default)]
     org: Option<String>,
     #[serde(default)]
-    setup: Vec<String>,
+    setup: Vec<SetupStep>,
+    #[serde(default)]
+    start: Vec<SetupStep>,
+    #[serde(default)]
+    stop: Vec<SetupStep>,
 }
 
 /// Parse recipe YAML from `contents`. `source` is used in error messages.
@@ -41,6 +70,8 @@ pub fn parse_yaml(contents: &str, source: &Path) -> Result<Recipe> {
         name: nonempty(file.name),
         org: nonempty(file.org),
         setup: file.setup,
+        start: file.start,
+        stop: file.stop,
     })
 }
 
@@ -125,6 +156,8 @@ fn apply_overrides(
         name: override_or(sprite_override, recipe.name),
         org: override_or(org_override, recipe.org),
         setup: recipe.setup,
+        start: recipe.start,
+        stop: recipe.stop,
     }
 }
 
@@ -168,7 +201,10 @@ mod tests {
         assert_eq!(recipe.org.as_deref(), Some("acme"));
         assert_eq!(
             recipe.setup,
-            vec!["echo one".to_string(), "echo two".to_string()]
+            vec![
+                SetupStep::Sprite("echo one".to_string()),
+                SetupStep::Sprite("echo two".to_string())
+            ]
         );
     }
 
@@ -180,6 +216,8 @@ mod tests {
         assert_eq!(recipe.name.as_deref(), Some("demo"));
         assert_eq!(recipe.org, None);
         assert!(recipe.setup.is_empty());
+        assert!(recipe.start.is_empty());
+        assert!(recipe.stop.is_empty());
     }
 
     #[test]
@@ -208,6 +246,67 @@ mod tests {
     fn omitted_setup_is_zero_commands() {
         let recipe = parse_yaml("name: demo\n", Path::new("memory.yaml")).unwrap();
         assert!(recipe.setup.is_empty());
+    }
+
+    #[test]
+    fn host_setup_step() {
+        let recipe = parse_yaml(
+            "name: demo\nsetup:\n  - echo in-vm\n  - host: gh repo deploy-key add\n",
+            Path::new("memory.yaml"),
+        )
+        .unwrap();
+        assert_eq!(
+            recipe.setup,
+            vec![
+                SetupStep::Sprite("echo in-vm".to_string()),
+                SetupStep::Host {
+                    host: "gh repo deploy-key add".to_string()
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn stop_list_parses() {
+        let recipe = parse_yaml(
+            "name: demo\nstop:\n  - sprite-env services stop app\n  - host: echo done\n",
+            Path::new("memory.yaml"),
+        )
+        .unwrap();
+        assert!(recipe.setup.is_empty());
+        assert!(recipe.start.is_empty());
+        assert_eq!(
+            recipe.stop,
+            vec![
+                SetupStep::Sprite("sprite-env services stop app".to_string()),
+                SetupStep::Host {
+                    host: "echo done".to_string()
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn start_list_parses() {
+        let recipe = parse_yaml(
+            "name: demo\nstart:\n  - sprite-env services start app\n  - host: echo up\nstop:\n  - echo down\n",
+            Path::new("memory.yaml"),
+        )
+        .unwrap();
+        assert!(recipe.setup.is_empty());
+        assert_eq!(
+            recipe.start,
+            vec![
+                SetupStep::Sprite("sprite-env services start app".to_string()),
+                SetupStep::Host {
+                    host: "echo up".to_string()
+                }
+            ]
+        );
+        assert_eq!(
+            recipe.stop,
+            vec![SetupStep::Sprite("echo down".to_string())]
+        );
     }
 
     #[test]

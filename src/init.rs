@@ -56,14 +56,20 @@ fn yaml_double_quoted(value: &str) -> String {
 
 /// Starter recipe YAML. Valid on its own: `name` plus empty `setup`.
 pub fn starter_yaml(name: &str) -> String {
-    let name = yaml_double_quoted(name);
+    let quoted = yaml_double_quoted(name);
     format!(
         "# Spry recipe — share this file with the repository.\n\
-         name: {name}\n\
+         name: {quoted}\n\
+         # name: {name}-{{{{branch_slug}}}}\n\
          # org: your-org\n\
          setup: []\n\
          # setup:\n\
-         #   - echo \"hello from the sprite VM\"\n"
+         #   - git clone \"{{{{remote}}}}\" /home/sprite/{name}\n\
+         #   - git -C /home/sprite/{name} checkout \"{{{{branch}}}}\"\n\
+         # start:\n\
+         #   - sprite-env services start app\n\
+         # stop:\n\
+         #   - sprite-env services stop app\n"
     )
 }
 
@@ -140,6 +146,14 @@ mod tests {
         assert_eq!(recipe.name.as_deref(), Some("demo"));
         assert!(recipe.setup.is_empty());
         assert_eq!(recipe.name.as_deref(), Some(dir_basename(&cwd).unwrap()));
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("{{branch_slug}}"), "{raw}");
+        assert!(raw.contains("{{remote}}"), "{raw}");
+        assert!(raw.contains("{{branch}}"), "{raw}");
+        assert!(raw.contains("start:"), "{raw}");
+        assert!(raw.contains("stop:"), "{raw}");
+        assert!(recipe.start.is_empty());
+        assert!(recipe.stop.is_empty());
     }
 
     #[test]

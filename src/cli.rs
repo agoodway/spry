@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use crate::app::{self, AppOpts, Phase};
+use crate::host::CommandHost;
 use crate::init::{self, InitOpts};
 use crate::setup::{self, SetupOpts};
 use crate::sprite::{self, CommandClient};
@@ -22,6 +24,8 @@ pub enum Commands {
     Init(InitArgs),
     /// Provision and configure a sprite VM from the recipe
     Setup(SetupArgs),
+    /// Start or stop recipe app steps on an existing sprite VM
+    App(AppArgs),
 }
 
 fn nonempty_cli_value(s: &str) -> Result<String, String> {
@@ -62,6 +66,46 @@ pub struct SetupArgs {
     /// Print resolved config and full sprite command lines
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
+    /// Git branch for {{branch}} / {{branch_slug}} (overrides the checkout)
+    #[arg(long = "branch", value_parser = nonempty_cli_value)]
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+#[command(arg_required_else_help = true)]
+pub struct AppArgs {
+    #[command(subcommand)]
+    pub command: AppCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AppCommand {
+    /// Run recipe start steps against an existing sprite VM
+    Start(AppRunArgs),
+    /// Run recipe stop steps against an existing sprite VM
+    Stop(AppRunArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct AppRunArgs {
+    /// Sprite VM name (overrides recipe `name`)
+    #[arg(short = 's', long = "sprite", value_parser = nonempty_cli_value)]
+    pub sprite: Option<String>,
+    /// Sprite organization (overrides recipe `org`)
+    #[arg(short = 'o', long = "org", value_parser = nonempty_cli_value)]
+    pub org: Option<String>,
+    /// Print planned sprite commands without executing
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Load this recipe instead of walking from the current directory
+    #[arg(short = 'c', long = "config")]
+    pub config: Option<PathBuf>,
+    /// Print resolved config and full sprite command lines
+    #[arg(short = 'v', long = "verbose")]
+    pub verbose: bool,
+    /// Git branch for {{branch}} / {{branch_slug}} (overrides the checkout)
+    #[arg(long = "branch", value_parser = nonempty_cli_value)]
+    pub branch: Option<String>,
 }
 
 /// Parse argv from the process and dispatch.
@@ -98,10 +142,40 @@ pub fn dispatch(cli: Cli, cwd: &Path, out: &mut dyn Write) -> Result<()> {
                     dry_run: args.dry_run,
                     config: args.config,
                     verbose: args.verbose,
+                    branch: args.branch,
                     search_root: None,
+                    git: None,
                 },
                 cwd,
                 &client,
+                &CommandHost,
+                available,
+                out,
+            )
+        }
+        Commands::App(args) => {
+            let (phase, args) = match args.command {
+                AppCommand::Start(args) => (Phase::Start, args),
+                AppCommand::Stop(args) => (Phase::Stop, args),
+            };
+            let bin = sprite::find_in_path("sprite", std::env::var_os("PATH").as_deref());
+            let available = bin.is_some();
+            let client = CommandClient::new(bin.unwrap_or_else(|| PathBuf::from("sprite")));
+            app::run(
+                phase,
+                &AppOpts {
+                    sprite: args.sprite,
+                    org: args.org,
+                    dry_run: args.dry_run,
+                    config: args.config,
+                    verbose: args.verbose,
+                    branch: args.branch,
+                    search_root: None,
+                    git: None,
+                },
+                cwd,
+                &client,
+                &CommandHost,
                 available,
                 out,
             )
@@ -146,6 +220,8 @@ mod tests {
             "-c",
             "recipe.yaml",
             "-v",
+            "--branch",
+            "feat/x",
         ])
         .unwrap();
         match cli.command {
@@ -159,6 +235,7 @@ mod tests {
                     Some(std::path::Path::new("recipe.yaml"))
                 );
                 assert!(args.verbose);
+                assert_eq!(args.branch.as_deref(), Some("feat/x"));
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -201,6 +278,92 @@ mod tests {
         let err = Cli::try_parse_from(["spry", "setup", "--org", ""]).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("must not be empty"), "{msg}");
+    }
+
+    #[test]
+    fn parses_app_stop_flags() {
+        let cli = Cli::try_parse_from([
+            "spry",
+            "app",
+            "stop",
+            "-s",
+            "demo",
+            "-o",
+            "acme",
+            "--dry-run",
+            "-c",
+            "recipe.yaml",
+            "-v",
+            "--branch",
+            "feat/x",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::App(args) => match args.command {
+                AppCommand::Stop(args) => {
+                    assert_eq!(args.sprite.as_deref(), Some("demo"));
+                    assert_eq!(args.org.as_deref(), Some("acme"));
+                    assert!(args.dry_run);
+                    assert_eq!(
+                        args.config.as_deref(),
+                        Some(std::path::Path::new("recipe.yaml"))
+                    );
+                    assert!(args.verbose);
+                    assert_eq!(args.branch.as_deref(), Some("feat/x"));
+                }
+                other => panic!("unexpected {other:?}"),
+            },
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_app_start_flags() {
+        let cli = Cli::try_parse_from([
+            "spry",
+            "app",
+            "start",
+            "-s",
+            "demo",
+            "-o",
+            "acme",
+            "--dry-run",
+            "-c",
+            "recipe.yaml",
+            "-v",
+            "--branch",
+            "feat/x",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::App(args) => match args.command {
+                AppCommand::Start(args) => {
+                    assert_eq!(args.sprite.as_deref(), Some("demo"));
+                    assert_eq!(args.org.as_deref(), Some("acme"));
+                    assert!(args.dry_run);
+                    assert_eq!(
+                        args.config.as_deref(),
+                        Some(std::path::Path::new("recipe.yaml"))
+                    );
+                    assert!(args.verbose);
+                    assert_eq!(args.branch.as_deref(), Some("feat/x"));
+                }
+                other => panic!("unexpected {other:?}"),
+            },
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_bare_stop() {
+        let err = Cli::try_parse_from(["spry", "stop"]).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unrecognized")
+                || msg.contains("unexpected")
+                || msg.contains("SUBCOMMAND"),
+            "{msg}"
+        );
     }
 
     #[test]

@@ -4,11 +4,13 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 
-use crate::config::{self, ResolvedConfig};
+use crate::config;
+use crate::host::HostRunner;
 use crate::sprite::{
-    create_argv, exec_argv, format_command, list_argv, missing_cli_error, name_present, ExecOutput,
-    SpriteClient,
+    create_argv, format_command, list_argv, missing_cli_error, name_present, SpriteClient,
 };
+use crate::steps;
+use crate::template::{self, GitInfo};
 use crate::user_error;
 
 #[derive(Debug, Clone, Default)]
@@ -19,8 +21,11 @@ pub struct SetupOpts {
     pub dry_run: bool,
     pub config: Option<PathBuf>,
     pub verbose: bool,
+    pub branch: Option<String>,
     /// When set, config discovery does not walk above this directory (test seam).
     pub(crate) search_root: Option<PathBuf>,
+    /// When set, skip `git_info(cwd)` (test seam).
+    pub(crate) git: Option<GitInfo>,
 }
 
 /// Load config, ensure the VM exists, and run setup commands.
@@ -28,6 +33,7 @@ pub fn run(
     opts: &SetupOpts,
     cwd: &Path,
     client: &dyn SpriteClient,
+    host: &dyn HostRunner,
     sprite_available: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -39,6 +45,7 @@ pub fn run(
         opts.org.as_deref(),
         opts.search_root.as_deref(),
     )?;
+    let git = steps::resolve_git(opts.git.clone(), opts.branch.as_deref(), cwd);
 
     let name = resolved.name.clone().ok_or_else(|| {
         user_error(
@@ -46,6 +53,8 @@ pub fn run(
             "set `name` in the recipe or pass `--sprite <name>`",
         )
     })?;
+    let name = template::expand(&name, &git)?;
+    template::reject_slash_in_name(&name)?;
     let org = resolved.org.as_deref();
 
     if opts.verbose {
@@ -55,6 +64,7 @@ pub fn run(
             Some(org) => writeln!(out, "org: {org}")?,
             None => writeln!(out, "org: absent")?,
         }
+        steps::write_template_verbose(out, &git)?;
     }
 
     if !sprite_available {
@@ -69,7 +79,18 @@ pub fn run(
     let exists = name_present(&names, &name);
 
     let created = ensure_vm(opts, client, &name, org, exists, out)?;
-    run_commands(opts, client, &resolved, &name, org, out)?;
+    steps::run_steps(
+        &resolved.setup,
+        opts.dry_run,
+        opts.verbose,
+        "setup",
+        client,
+        host,
+        &name,
+        org,
+        &git,
+        out,
+    )?;
 
     let elapsed = started.elapsed().as_secs_f64();
     let status = match (opts.dry_run, created) {
@@ -127,48 +148,11 @@ fn ensure_vm(
     Ok(true)
 }
 
-fn run_commands(
-    opts: &SetupOpts,
-    client: &dyn SpriteClient,
-    resolved: &ResolvedConfig,
-    name: &str,
-    org: Option<&str>,
-    out: &mut dyn Write,
-) -> Result<()> {
-    let total = resolved.setup.len();
-    for (index, command) in resolved.setup.iter().enumerate() {
-        let line = format_command(&exec_argv(name, org, command));
-        if opts.dry_run {
-            writeln!(out, "{line}")?;
-            continue;
-        }
-        let i = index + 1;
-        writeln!(out, "[{i}/{total}] {command}")?;
-        if opts.verbose {
-            writeln!(out, "{line}")?;
-        }
-        out.flush()?;
-        match client.exec(name, org, command) {
-            Ok(ExecOutput { stdout, stderr }) => {
-                if !stdout.is_empty() {
-                    write!(out, "{stdout}")?;
-                }
-                if !stderr.is_empty() {
-                    write!(out, "{stderr}")?;
-                }
-            }
-            Err(err) => {
-                return Err(err).with_context(|| format!("setup command {i} of {total} failed"));
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sprite::{FakeSpriteClient, SpriteCall};
+    use crate::host::FakeHostRunner;
+    use crate::sprite::{exec_argv, FakeSpriteClient, SpriteCall};
     use std::fs;
     use tempfile::TempDir;
 
@@ -179,7 +163,16 @@ mod tests {
     fn opts_for(dir: &Path) -> SetupOpts {
         SetupOpts {
             search_root: Some(dir.to_path_buf()),
+            git: Some(GitInfo::default()),
             ..SetupOpts::default()
+        }
+    }
+
+    fn git_info(branch: &str, commit: &str, remote: &str) -> GitInfo {
+        GitInfo {
+            branch: Some(branch.to_string()),
+            commit: Some(commit.to_string()),
+            remote: Some(remote.to_string()),
         }
     }
 
@@ -190,7 +183,20 @@ mod tests {
         sprite_available: bool,
     ) -> Result<String> {
         let mut out = Vec::new();
-        run(&opts, dir, client, sprite_available, &mut out)?;
+        let host = FakeHostRunner::default();
+        run(&opts, dir, client, &host, sprite_available, &mut out)?;
+        Ok(String::from_utf8(out).unwrap())
+    }
+
+    fn run_setup_host(
+        dir: &Path,
+        opts: SetupOpts,
+        client: &FakeSpriteClient,
+        host: &FakeHostRunner,
+        sprite_available: bool,
+    ) -> Result<String> {
+        let mut out = Vec::new();
+        run(&opts, dir, client, host, sprite_available, &mut out)?;
         Ok(String::from_utf8(out).unwrap())
     }
 
@@ -690,6 +696,247 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn unique_vm_name_per_branch() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(
+            dir.path(),
+            "name: myapp-{{branch_slug}}\nsetup:\n  - echo hi\n",
+        );
+        let client = FakeSpriteClient::default();
+        let mut opts = opts_for(dir.path());
+        opts.git = Some(git_info(
+            "feature/add-dashboard",
+            "abc123def",
+            "git@github.com:example-org/example-app.git",
+        ));
+        run_setup(dir.path(), opts, &client, true).unwrap();
+        match client
+            .calls()
+            .iter()
+            .find(|c| matches!(c, SpriteCall::Create { .. }))
+        {
+            Some(SpriteCall::Create { name, .. }) => {
+                assert_eq!(name, "myapp-feature-add-dashboard");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(client.exec_commands(), vec!["echo hi".to_string()]);
+    }
+
+    #[test]
+    fn sprite_flag_is_expanded() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(dir.path(), "name: from-file\nsetup: []\n");
+        let client = FakeSpriteClient::with_sprites(&["app-feat-x"]);
+        let mut opts = opts_for(dir.path());
+        opts.sprite = Some("app-{{branch_slug}}".to_string());
+        opts.branch = Some("feat/x".to_string());
+        run_setup(dir.path(), opts, &client, true).unwrap();
+        match client.calls().first() {
+            Some(SpriteCall::List { .. }) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(!client.created());
+    }
+
+    #[test]
+    fn branch_flag_without_git() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(
+            dir.path(),
+            "name: app-{{branch_slug}}\nsetup:\n  - git checkout \"{{branch}}\"\n",
+        );
+        let client = FakeSpriteClient::with_sprites(&["app-feat-x"]);
+        let mut opts = opts_for(dir.path());
+        opts.branch = Some("feat/x".to_string());
+        run_setup(dir.path(), opts, &client, true).unwrap();
+        assert_eq!(
+            client.exec_commands(),
+            vec!["git checkout \"feat/x\"".to_string()]
+        );
+    }
+
+    #[test]
+    fn dry_run_shows_expanded_checkout() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(
+            dir.path(),
+            "name: demo\nsetup:\n  - git checkout \"{{branch}}\"\n",
+        );
+        let client = FakeSpriteClient::with_sprites(&["demo"]);
+        let mut opts = opts_for(dir.path());
+        opts.dry_run = true;
+        opts.branch = Some("feat/x".to_string());
+        let printed = run_setup(dir.path(), opts, &client, true).unwrap();
+        assert!(printed.contains("feat/x"), "{printed}");
+        assert!(!printed.contains("{{branch}}"), "{printed}");
+        assert!(client.exec_commands().is_empty());
+    }
+
+    #[test]
+    fn checkout_uses_real_branch_not_slug() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(
+            dir.path(),
+            "name: demo\nsetup:\n  - git checkout \"{{branch}}\"\n",
+        );
+        let client = FakeSpriteClient::with_sprites(&["demo"]);
+        let mut opts = opts_for(dir.path());
+        opts.git = Some(git_info(
+            "feature/add-dashboard",
+            "abc123def",
+            "git@github.com:example-org/example-app.git",
+        ));
+        run_setup(dir.path(), opts, &client, true).unwrap();
+        assert_eq!(
+            client.exec_commands(),
+            vec!["git checkout \"feature/add-dashboard\"".to_string()]
+        );
+    }
+
+    #[test]
+    fn name_needs_branch_and_git_is_missing() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(dir.path(), "name: app-{{branch_slug}}\nsetup: []\n");
+        let client = FakeSpriteClient::default();
+        let err = run_setup(dir.path(), opts_for(dir.path()), &client, true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("branch_slug") || err.contains("--branch"),
+            "{err}"
+        );
+        assert!(err.contains("To fix this"), "{err}");
+        assert!(client.calls().is_empty());
+    }
+
+    #[test]
+    fn setup_line_needs_remote_after_provision() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(
+            dir.path(),
+            "name: demo\nsetup:\n  - echo one\n  - git clone {{remote}}\n",
+        );
+        let client = FakeSpriteClient::with_sprites(&["demo"]);
+        let mut opts = opts_for(dir.path());
+        opts.git = Some(GitInfo {
+            branch: Some("feat".to_string()),
+            commit: Some("abc".to_string()),
+            remote: None,
+        });
+        let err = run_setup(dir.path(), opts, &client, true).unwrap_err();
+        let chained = format!("{err:#}");
+        assert!(chained.contains("remote"), "{chained}");
+        assert!(
+            chained.contains("2 of 3") || chained.contains("2 of 2"),
+            "{chained}"
+        );
+        assert_eq!(client.exec_commands(), vec!["echo one".to_string()]);
+    }
+
+    #[test]
+    fn name_with_slash_from_raw_branch_fails() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(dir.path(), "name: \"{{branch}}\"\nsetup: []\n");
+        let client = FakeSpriteClient::default();
+        let mut opts = opts_for(dir.path());
+        opts.branch = Some("feature/add-dashboard".to_string());
+        let err = run_setup(dir.path(), opts, &client, true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("{{branch_slug}}"), "{err}");
+        assert!(client.calls().is_empty());
+    }
+
+    #[test]
+    fn verbose_prints_template_context() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(dir.path(), "name: demo\nsetup: []\n");
+        let client = FakeSpriteClient::with_sprites(&["demo"]);
+        let mut opts = opts_for(dir.path());
+        opts.verbose = true;
+        opts.git = Some(git_info(
+            "feature/add-dashboard",
+            "abc123def",
+            "git@github.com:example-org/example-app.git",
+        ));
+        let printed = run_setup(dir.path(), opts, &client, true).unwrap();
+        assert!(
+            printed.contains("branch: feature/add-dashboard"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("branch_slug: feature-add-dashboard"),
+            "{printed}"
+        );
+        assert!(printed.contains("commit: abc123def"), "{printed}");
+        assert!(
+            printed.contains("remote: git@github.com:example-org/example-app.git"),
+            "{printed}"
+        );
+    }
+
+    #[test]
+    fn host_setup_runs_on_host_with_sprite_env() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(
+            dir.path(),
+            "name: demo\norg: acme\nsetup:\n  - echo in-vm\n  - host: gh repo deploy-key add\n",
+        );
+        let client = FakeSpriteClient::with_sprites(&["demo"]);
+        let host = FakeHostRunner::default();
+        run_setup_host(dir.path(), opts_for(dir.path()), &client, &host, true).unwrap();
+        assert_eq!(client.exec_commands(), vec!["echo in-vm".to_string()]);
+        let calls = host.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].command, "gh repo deploy-key add");
+        assert!(
+            calls[0]
+                .env
+                .iter()
+                .any(|(k, v)| k == "SPRITE" && v == "demo"),
+            "{:?}",
+            calls[0].env
+        );
+        assert!(
+            calls[0].env.iter().any(|(k, v)| k == "ORG" && v == "acme"),
+            "{:?}",
+            calls[0].env
+        );
+    }
+
+    #[test]
+    fn dry_run_prints_host_prefix_not_sprite_exec() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(dir.path(), "name: demo\nsetup:\n  - host: echo on-laptop\n");
+        let client = FakeSpriteClient::with_sprites(&["demo"]);
+        let host = FakeHostRunner::default();
+        let mut opts = opts_for(dir.path());
+        opts.dry_run = true;
+        let printed = run_setup_host(dir.path(), opts, &client, &host, true).unwrap();
+        assert!(printed.contains("host: echo on-laptop"), "{printed}");
+        assert!(!printed.contains("sprite exec"), "{printed}");
+        assert!(host.calls().is_empty());
+        assert!(client.exec_commands().is_empty());
+    }
+
+    #[test]
+    fn host_command_expands_sprite_placeholder() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(
+            dir.path(),
+            "name: demo\norg: acme\nsetup:\n  - host: sprite exec -s {{sprite}} -o {{org}} -- true\n",
+        );
+        let client = FakeSpriteClient::with_sprites(&["demo"]);
+        let host = FakeHostRunner::default();
+        run_setup_host(dir.path(), opts_for(dir.path()), &client, &host, true).unwrap();
+        assert_eq!(
+            host.calls()[0].command,
+            "sprite exec -s demo -o acme -- true"
+        );
     }
 
     #[test]
