@@ -68,8 +68,8 @@ No git. No home-directory fallback.
 Schema:
 
 ```yaml
-name: myapp          # required for setup unless --sprite
-org: example-org        # optional
+name: myapp               # required for setup unless --sprite
+org: example-org          # optional
 setup:                    # optional; empty or omitted means create-only
   - go install golang.org/x/tools/cmd/stringer@latest
 ```
