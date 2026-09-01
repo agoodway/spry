@@ -19,6 +19,7 @@ pub trait SpriteClient {
     fn list(&self, org: Option<&str>) -> Result<Vec<String>>;
     fn create(&self, name: &str, org: Option<&str>) -> Result<()>;
     fn exec(&self, name: &str, org: Option<&str>, command: &str) -> Result<ExecOutput>;
+    fn destroy(&self, name: &str, org: Option<&str>) -> Result<()>;
 }
 
 /// Production client that shells out to a resolved `sprite` binary.
@@ -99,6 +100,25 @@ impl SpriteClient for CommandClient {
         }
         Ok(ExecOutput::default())
     }
+
+    fn destroy(&self, name: &str, org: Option<&str>) -> Result<()> {
+        let args = destroy_argv(name, org);
+        let status = self
+            .command()
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .context("failed to run `sprite destroy`")?;
+        if !status.success() {
+            bail!(
+                "sprite destroy failed with status {}",
+                status.code().unwrap_or(-1)
+            );
+        }
+        Ok(())
+    }
 }
 
 pub fn list_argv(org: Option<&str>) -> Vec<String> {
@@ -124,6 +144,17 @@ pub fn exec_argv(name: &str, org: Option<&str>, command: &str) -> Vec<String> {
     args.push("sh".to_string());
     args.push("-c".to_string());
     args.push(command.to_string());
+    args
+}
+
+pub fn destroy_argv(name: &str, org: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "destroy".to_string(),
+        "-s".to_string(),
+        name.to_string(),
+        "--force".to_string(),
+    ];
+    push_org(&mut args, org);
     args
 }
 
@@ -253,6 +284,10 @@ pub enum SpriteCall {
         org: Option<String>,
         command: String,
     },
+    Destroy {
+        name: String,
+        org: Option<String>,
+    },
 }
 
 /// Test double that records calls and returns scripted results.
@@ -262,6 +297,7 @@ pub struct FakeSpriteClient {
     calls: std::cell::RefCell<Vec<SpriteCall>>,
     list_result: Result<Vec<String>, String>,
     create_result: Result<(), String>,
+    destroy_result: Result<(), String>,
     exec_script: Vec<Result<ExecOutput, String>>,
     exec_index: std::cell::Cell<usize>,
 }
@@ -273,6 +309,7 @@ impl Default for FakeSpriteClient {
             calls: std::cell::RefCell::new(Vec::new()),
             list_result: Ok(Vec::new()),
             create_result: Ok(()),
+            destroy_result: Ok(()),
             exec_script: Vec::new(),
             exec_index: std::cell::Cell::new(0),
         }
@@ -300,6 +337,11 @@ impl FakeSpriteClient {
             create_result: Err(message.to_string()),
             ..Self::default()
         }
+    }
+
+    pub fn destroy_fails(mut self, message: &str) -> Self {
+        self.destroy_result = Err(message.to_string());
+        self
     }
 
     pub fn fail_exec_at(mut self, index: usize, message: &str) -> Self {
@@ -336,6 +378,13 @@ impl FakeSpriteClient {
             .borrow()
             .iter()
             .any(|call| matches!(call, SpriteCall::Create { .. }))
+    }
+
+    pub fn destroyed(&self) -> bool {
+        self.calls
+            .borrow()
+            .iter()
+            .any(|call| matches!(call, SpriteCall::Destroy { .. }))
     }
 
     pub fn exec_commands(&self) -> Vec<String> {
@@ -387,6 +436,17 @@ impl SpriteClient for FakeSpriteClient {
             None => Ok(ExecOutput::default()),
         }
     }
+
+    fn destroy(&self, name: &str, org: Option<&str>) -> Result<()> {
+        self.calls.borrow_mut().push(SpriteCall::Destroy {
+            name: name.to_string(),
+            org: org.map(str::to_string),
+        });
+        match &self.destroy_result {
+            Ok(()) => Ok(()),
+            Err(message) => bail!("{message}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -435,6 +495,21 @@ mod tests {
             args,
             vec!["exec", "-s", "demo", "-o", "acme", "--", "sh", "-c", "echo hi"]
         );
+    }
+
+    #[test]
+    fn destroy_argv_omits_org_when_absent() {
+        let args = destroy_argv("demo", None);
+        assert_eq!(args, vec!["destroy", "-s", "demo", "--force"]);
+        assert!(!args.contains(&"-o".to_string()));
+        assert!(!args.contains(&"-f".to_string()));
+    }
+
+    #[test]
+    fn destroy_argv_includes_org() {
+        let args = destroy_argv("demo", Some("acme"));
+        assert_eq!(args, vec!["destroy", "-s", "demo", "--force", "-o", "acme"]);
+        assert!(!args.contains(&"-f".to_string()));
     }
 
     #[test]
@@ -511,6 +586,20 @@ case "$1" in
 list) printf 'demo\n' ;;
 create) ;;
 exec) printf 'out\n'; printf 'err\n' >&2 ;;
+destroy)
+  force=0
+  sprite=""
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -s) sprite="$2"; shift 2 ;;
+      --force) force=1; shift ;;
+      -f) exit 2 ;;
+      *) shift ;;
+    esac
+  done
+  [ -n "$sprite" ] && [ "$force" = 1 ] || exit 2
+  ;;
 *) exit 2 ;;
 esac
 "#;
@@ -520,12 +609,22 @@ esac
         assert!(name_present(&names, "demo"));
         client.create("demo", None).unwrap();
         client.exec("demo", None, "echo hi").unwrap();
+        client.destroy("demo", None).unwrap();
         let log = fs::read_to_string(dir.path().join("argv.log")).unwrap();
         assert!(log.contains("list"), "{log}");
         assert!(log.contains("create"), "{log}");
         assert!(log.contains("--skip-console"), "{log}");
         assert!(log.contains("exec"), "{log}");
         assert!(log.contains("echo hi"), "{log}");
+        assert!(log.contains("destroy"), "{log}");
+        assert!(log.contains("-s"), "{log}");
+        assert!(log.contains("--force"), "{log}");
+        assert!(!log.contains(" -f"), "{log}");
+        assert!(
+            !log.lines()
+                .any(|line| line.split_whitespace().any(|w| w == "-f")),
+            "{log}"
+        );
     }
 
     #[cfg(unix)]

@@ -7,6 +7,7 @@ pub mod init;
 pub mod setup;
 pub mod sprite;
 pub mod steps;
+pub mod teardown;
 pub mod template;
 
 use anyhow::anyhow;

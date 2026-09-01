@@ -69,7 +69,9 @@ pub fn starter_yaml(name: &str) -> String {
          # start:\n\
          #   - sprite-env services start app\n\
          # stop:\n\
-         #   - sprite-env services stop app\n"
+         #   - sprite-env services stop app\n\
+         # teardown:\n\
+         #   - host: echo cleanup\n"
     )
 }
 
@@ -152,8 +154,10 @@ mod tests {
         assert!(raw.contains("{{branch}}"), "{raw}");
         assert!(raw.contains("start:"), "{raw}");
         assert!(raw.contains("stop:"), "{raw}");
+        assert!(raw.contains("teardown:"), "{raw}");
         assert!(recipe.start.is_empty());
         assert!(recipe.stop.is_empty());
+        assert!(recipe.teardown.is_empty());
     }
 
     #[test]

@@ -2,13 +2,13 @@
 
 A small CLI that stores a repo-local Sprite VM recipe and applies it.
 
-Spry wraps the existing [`sprite`](https://sprite.dev) CLI (`list`, `create --skip-console`, `exec`). It does not call the Sprites HTTP API.
+Spry wraps the existing [`sprite`](https://sprite.dev) CLI (`list`, `create --skip-console`, `exec`, `destroy -s <name> --force`). It does not call the Sprites HTTP API.
 
-Treat `.spry.yaml` `setup` lines as code you are willing to run inside the VM (Makefile-class trust), except `{host: …}` entries which run on your laptop via `bash -lc`. `sprite list` / `create` / `exec` have no timeout: a hung `sprite` process blocks `spry`.
+Treat every `.spry.yaml` phase (`setup`, `start`, `stop`, `teardown`) as code you are willing to run. `{host: …}` entries run on your laptop via `bash -lc`. `sprite list` / `create` / `exec` / `destroy` have no timeout: a hung `sprite` process blocks `spry`.
 
 ## Install
 
-`sprite` must be on `PATH` for `spry setup` and `spry app`. `spry init` does not need it.
+`sprite` must be on `PATH` for `spry setup`, `spry app`, and `spry teardown`. `spry init` does not need it.
 
 ### Linux x86-64 (GitHub release)
 
@@ -47,6 +47,8 @@ spry setup --dry-run
 spry setup
 spry app stop
 spry app start
+spry teardown --dry-run
+spry teardown
 ```
 
 ## Recipe
@@ -57,9 +59,9 @@ spry app start
 name: myapp-{{branch_slug}}
 org: myorg
 setup:
-  - mkdir -p ~/.ssh && ssh-keygen -t ed25519 -N "" -C sprite-example-app -f ~/.ssh/example-app_ed25519
+  - mkdir -p ~/.ssh && ssh-keygen -t ed25519 -N "" -C sprite-example-app -f ~/.ssh/example_app_ed25519
   - host: |
-      PUB=$(sprite exec -s "$SPRITE" -o "$ORG" -- cat /home/sprite/.ssh/example-app_ed25519.pub)
+      PUB=$(sprite exec -s "$SPRITE" -o "$ORG" -- cat /home/sprite/.ssh/example_app_ed25519.pub)
       gh repo deploy-key add -R example-org/example-app --title "sprite-$SPRITE" --allow-write /dev/stdin <<< "$PUB"
   - git clone git@github.com:example-org/example-app.git /home/sprite/example-app
   - git -C /home/sprite/example-app checkout "{{branch}}"
@@ -67,15 +69,19 @@ start:
   - sprite-env services start app
 stop:
   - sprite-env services stop app
+teardown:
+  - host: |
+      KEY_ID=$(gh repo deploy-key list -R example-org/example-app --json id,title --jq '.[] | select(.title=="sprite-'"$SPRITE"'") | .id')
+      if [ -n "$KEY_ID" ]; then gh repo deploy-key delete "$KEY_ID" -R example-org/example-app; fi
 ```
 
 A plain string runs inside the VM (`sprite exec`). A `{host: …}` map runs on the laptop. Host commands see `SPRITE` (resolved VM name) and `ORG` when org is set.
 
-`name` is required for setup, `app start`, and `app stop` unless you pass `--sprite`. `org` is optional. An omitted or empty `setup` list still provisions the VM. An omitted or empty `start` or `stop` list still requires the VM to exist, then exits success.
+`name` is required for setup, `app start`, `app stop`, and teardown unless you pass `--sprite`. `org` is optional. An omitted or empty `setup` list still provisions the VM. An omitted or empty `start` or `stop` list still requires the VM to exist, then exits success. An omitted or empty `teardown` list still destroys the VM after confirming it exists.
 
 ### Placeholders
 
-`spry setup`, `spry app start`, and `spry app stop` expand these in the resolved **name** (recipe or `--sprite`) and in each **setup** / **start** / **stop** command, using git from the current directory:
+`spry setup`, `spry app start`, `spry app stop`, and `spry teardown` expand these in the resolved **name** (recipe or `--sprite`) and in each **setup** / **start** / **stop** / **teardown** command, using git from the current directory:
 
 | Token | Value |
 |-------|--------|
@@ -83,8 +89,8 @@ A plain string runs inside the VM (`sprite exec`). A `{host: …}` map runs on t
 | `{{branch_slug}}` | Same branch with `/` and other unsafe characters turned into `-` (for VM names) |
 | `{{commit}}` | Full HEAD SHA |
 | `{{remote}}` | `origin` URL |
-| `{{sprite}}` | Resolved VM name (setup, start, and stop lines) |
-| `{{org}}` | Resolved org (setup, start, and stop lines) |
+| `{{sprite}}` | Resolved VM name (setup, start, stop, and teardown lines) |
+| `{{org}}` | Resolved org (setup, start, stop, and teardown lines) |
 
 `--branch` overrides `{{branch}}` / `{{branch_slug}}` even outside a git repo. `{{commit}}` and `{{remote}}` still need a checkout. Values are not shell-quoted — quote them in the recipe. Recipes with no `{{…}}` do not require git.
 
@@ -139,16 +145,35 @@ spry app stop --branch feat/x
 
 There is no platform sleep API. Stopping services (for example `sprite-env services stop app`) drops LiveView connections so the Sprite can idle. `spry app start` is the matching resume (typically `sprite-env services start app`).
 
+### `spry teardown`
+
+Load the recipe, require the VM to exist, run each `teardown:` step (fail-fast), then destroy the VM with `sprite destroy -s <name> --force` (plus `-o <org>` when org is set). There is no confirmation prompt. String steps run inside the VM with `sprite exec`. `{host: …}` steps run on the laptop (for example deleting a GitHub deploy key) while the VM still exists. Teardown lines must be idempotent: if host cleanup succeeds and destroy then fails, a re-run must tolerate already-removed resources. Teardown does not create a sprite and does not run `start:` or `stop:`. A missing VM is an error (no teardown steps, no destroy). A failed teardown step leaves the VM.
+
+```sh
+spry teardown
+spry teardown --dry-run
+spry teardown --no-destroy
+spry teardown --sprite demo --org acme
+spry teardown --config path/to/recipe.yaml
+spry teardown --verbose
+spry teardown --branch feat/x
+```
+
+- `--dry-run` may list sprites, but does not exec, run host commands, or destroy. It prints the expanded teardown lines, then the destroy command.
+- `--no-destroy` runs `teardown:` and leaves the VM. Combined with `--dry-run`, it prints teardown lines only (not destroy).
+- `--verbose` prints the resolved config path, name, org (or that org is absent), template values (or `absent`), and complete `sprite` / `host:` command lines including destroy when destroy will run.
+
 ## Flags
 
 | Flag | Command | Meaning |
 |------|---------|---------|
-| `--sprite`, `-s` | setup, app start, app stop | Override recipe `name` |
-| `--org`, `-o` | setup, app start, app stop | Override recipe `org` |
+| `--sprite`, `-s` | setup, app start, app stop, teardown | Override recipe `name` |
+| `--org`, `-o` | setup, app start, app stop, teardown | Override recipe `org` |
 | `--no-create` | setup | Do not provision a missing VM |
-| `--dry-run` | setup, app start, app stop | Print planned `sprite` / `host:` invocations |
-| `--config`, `-c` | setup, app start, app stop | Load this recipe; skip walk-up discovery |
-| `--verbose`, `-v` | setup, app start, app stop | Print resolved inputs and full command lines |
-| `--branch` | setup, app start, app stop | Override git branch for `{{branch}}` / `{{branch_slug}}` |
+| `--no-destroy` | teardown | Run teardown steps and leave the VM |
+| `--dry-run` | setup, app start, app stop, teardown | Print planned `sprite` / `host:` invocations |
+| `--config`, `-c` | setup, app start, app stop, teardown | Load this recipe; skip walk-up discovery |
+| `--verbose`, `-v` | setup, app start, app stop, teardown | Print resolved inputs and full command lines |
+| `--branch` | setup, app start, app stop, teardown | Override git branch for `{{branch}}` / `{{branch_slug}}` |
 | `--output` | init | Write the starter recipe here |
 | `--force` | init | Overwrite an existing recipe file |

@@ -44,7 +44,7 @@ fn host_env(name: &str, org: Option<&str>) -> Vec<(&'static str, String)> {
     env
 }
 
-/// Run recipe steps (setup, start, or stop). `phase` is used in progress labels and errors.
+/// Run recipe steps (setup, start, stop, or teardown). `phase` is used in progress labels and errors.
 #[allow(clippy::too_many_arguments)]
 pub fn run_steps(
     steps: &[SetupStep],

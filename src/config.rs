@@ -35,6 +35,7 @@ pub struct Recipe {
     pub setup: Vec<SetupStep>,
     pub start: Vec<SetupStep>,
     pub stop: Vec<SetupStep>,
+    pub teardown: Vec<SetupStep>,
 }
 
 /// Recipe plus the file it came from, with flag overrides applied.
@@ -46,6 +47,7 @@ pub struct ResolvedConfig {
     pub setup: Vec<SetupStep>,
     pub start: Vec<SetupStep>,
     pub stop: Vec<SetupStep>,
+    pub teardown: Vec<SetupStep>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -60,6 +62,8 @@ struct RecipeFile {
     start: Vec<SetupStep>,
     #[serde(default)]
     stop: Vec<SetupStep>,
+    #[serde(default)]
+    teardown: Vec<SetupStep>,
 }
 
 /// Parse recipe YAML from `contents`. `source` is used in error messages.
@@ -72,6 +76,7 @@ pub fn parse_yaml(contents: &str, source: &Path) -> Result<Recipe> {
         setup: file.setup,
         start: file.start,
         stop: file.stop,
+        teardown: file.teardown,
     })
 }
 
@@ -158,6 +163,7 @@ fn apply_overrides(
         setup: recipe.setup,
         start: recipe.start,
         stop: recipe.stop,
+        teardown: recipe.teardown,
     }
 }
 
@@ -218,6 +224,7 @@ mod tests {
         assert!(recipe.setup.is_empty());
         assert!(recipe.start.is_empty());
         assert!(recipe.stop.is_empty());
+        assert!(recipe.teardown.is_empty());
     }
 
     #[test]
@@ -306,6 +313,36 @@ mod tests {
         assert_eq!(
             recipe.stop,
             vec![SetupStep::Sprite("echo down".to_string())]
+        );
+    }
+
+    #[test]
+    fn teardown_list_parses() {
+        let recipe = parse_yaml(
+            "name: demo\nsetup:\n  - echo setup\nstart:\n  - echo start\nstop:\n  - echo stop\nteardown:\n  - echo in-vm\n  - host: gh repo deploy-key delete\n",
+            Path::new("memory.yaml"),
+        )
+        .unwrap();
+        assert_eq!(
+            recipe.teardown,
+            vec![
+                SetupStep::Sprite("echo in-vm".to_string()),
+                SetupStep::Host {
+                    host: "gh repo deploy-key delete".to_string()
+                }
+            ]
+        );
+        assert_eq!(
+            recipe.setup,
+            vec![SetupStep::Sprite("echo setup".to_string())]
+        );
+        assert_eq!(
+            recipe.start,
+            vec![SetupStep::Sprite("echo start".to_string())]
+        );
+        assert_eq!(
+            recipe.stop,
+            vec![SetupStep::Sprite("echo stop".to_string())]
         );
     }
 

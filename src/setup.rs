@@ -249,7 +249,8 @@ mod tests {
             match call {
                 SpriteCall::List { org }
                 | SpriteCall::Create { org, .. }
-                | SpriteCall::Exec { org, .. } => {
+                | SpriteCall::Exec { org, .. }
+                | SpriteCall::Destroy { org, .. } => {
                     assert_eq!(org, None);
                 }
             }

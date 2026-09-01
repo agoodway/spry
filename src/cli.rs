@@ -9,6 +9,7 @@ use crate::host::CommandHost;
 use crate::init::{self, InitOpts};
 use crate::setup::{self, SetupOpts};
 use crate::sprite::{self, CommandClient};
+use crate::teardown::{self, TeardownOpts};
 
 /// Repo-local Sprite VM recipes.
 #[derive(Debug, Parser)]
@@ -26,6 +27,8 @@ pub enum Commands {
     Setup(SetupArgs),
     /// Start or stop recipe app steps on an existing sprite VM
     App(AppArgs),
+    /// Run teardown steps then destroy the sprite VM
+    Teardown(TeardownArgs),
 }
 
 fn nonempty_cli_value(s: &str) -> Result<String, String> {
@@ -69,6 +72,31 @@ pub struct SetupArgs {
     /// Git branch for {{branch}} / {{branch_slug}} (overrides the checkout)
     #[arg(long = "branch", value_parser = nonempty_cli_value)]
     pub branch: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct TeardownArgs {
+    /// Sprite VM name (overrides recipe `name`)
+    #[arg(short = 's', long = "sprite", value_parser = nonempty_cli_value)]
+    pub sprite: Option<String>,
+    /// Sprite organization (overrides recipe `org`)
+    #[arg(short = 'o', long = "org", value_parser = nonempty_cli_value)]
+    pub org: Option<String>,
+    /// Print planned sprite commands without executing or destroying
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Load this recipe instead of walking from the current directory
+    #[arg(short = 'c', long = "config")]
+    pub config: Option<PathBuf>,
+    /// Print resolved config and full sprite command lines
+    #[arg(short = 'v', long = "verbose")]
+    pub verbose: bool,
+    /// Git branch for {{branch}} / {{branch_slug}} (overrides the checkout)
+    #[arg(long = "branch", value_parser = nonempty_cli_value)]
+    pub branch: Option<String>,
+    /// Run teardown steps and leave the VM
+    #[arg(long)]
+    pub no_destroy: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -170,6 +198,29 @@ pub fn dispatch(cli: Cli, cwd: &Path, out: &mut dyn Write) -> Result<()> {
                     config: args.config,
                     verbose: args.verbose,
                     branch: args.branch,
+                    search_root: None,
+                    git: None,
+                },
+                cwd,
+                &client,
+                &CommandHost,
+                available,
+                out,
+            )
+        }
+        Commands::Teardown(args) => {
+            let bin = sprite::find_in_path("sprite", std::env::var_os("PATH").as_deref());
+            let available = bin.is_some();
+            let client = CommandClient::new(bin.unwrap_or_else(|| PathBuf::from("sprite")));
+            teardown::run(
+                &TeardownOpts {
+                    sprite: args.sprite,
+                    org: args.org,
+                    dry_run: args.dry_run,
+                    config: args.config,
+                    verbose: args.verbose,
+                    branch: args.branch,
+                    no_destroy: args.no_destroy,
                     search_root: None,
                     git: None,
                 },
@@ -352,6 +403,58 @@ mod tests {
             },
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_teardown_flags() {
+        let cli = Cli::try_parse_from([
+            "spry",
+            "teardown",
+            "-s",
+            "demo",
+            "-o",
+            "acme",
+            "--no-destroy",
+            "--dry-run",
+            "-c",
+            "recipe.yaml",
+            "-v",
+            "--branch",
+            "feat/x",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Teardown(args) => {
+                assert_eq!(args.sprite.as_deref(), Some("demo"));
+                assert_eq!(args.org.as_deref(), Some("acme"));
+                assert!(args.no_destroy);
+                assert!(args.dry_run);
+                assert_eq!(
+                    args.config.as_deref(),
+                    Some(std::path::Path::new("recipe.yaml"))
+                );
+                assert!(args.verbose);
+                assert_eq!(args.branch.as_deref(), Some("feat/x"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn teardown_rejects_no_create() {
+        let err = Cli::try_parse_from(["spry", "teardown", "--no-create"]).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unexpected") || msg.contains("unrecognized"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn teardown_rejects_empty_sprite_flag() {
+        let err = Cli::try_parse_from(["spry", "teardown", "--sprite", ""]).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("must not be empty"), "{msg}");
     }
 
     #[test]
