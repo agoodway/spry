@@ -70,6 +70,7 @@ start:
 stop:
   - sprite-env services stop app
 teardown:
+  - rm -f ~/.ssh/example_app_ed25519 ~/.ssh/example_app_ed25519.pub
   - host: |
       KEY_ID=$(gh repo deploy-key list -R example-org/example-app --json id,title --jq '.[] | select(.title=="sprite-'"$SPRITE"'") | .id')
       if [ -n "$KEY_ID" ]; then gh repo deploy-key delete "$KEY_ID" -R example-org/example-app; fi
