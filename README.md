@@ -39,6 +39,26 @@ Or from a local checkout:
 cargo install --path .
 ```
 
+## Development in Amp orbs
+
+`.agents/setup` installs stable Rust with Clippy and rustfmt, `just`, the Sprite
+CLI, and the musl tooling used by release CI. It fetches dependencies from
+`Cargo.lock` and warms development, test, and static release builds so Amp can
+snapshot the prepared environment. Repeated setup runs reuse the installed tools
+and Cargo caches. `.agents/resume` only checks that the tools remain available;
+neither script authenticates Sprite or creates VMs.
+
+Run checks with `just check`. Run tests as CI does, serially. Orbs rewrite GitHub
+SSH URLs to HTTPS, so isolate Git configuration for the tests that assert remote
+URL values:
+
+```sh
+GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 cargo test --locked -- --test-threads=1
+```
+
+Live VM operations still require your own Sprite authentication. The setup files
+must reach the default branch before they configure future orbs.
+
 ## Quick start
 
 ```sh

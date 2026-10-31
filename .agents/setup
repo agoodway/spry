@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+
+step() {
+  local label="$1" start=$SECONDS
+  shift
+  printf '\n==> %s\n' "$label"
+  "$@"
+  printf '==> %s finished in %ss\n' "$label" "$((SECONDS - start))"
+}
+
+# Avoid apt metadata downloads when a snapshot already has the prerequisites.
+missing=()
+for package in build-essential ca-certificates curl git musl-tools; do
+  if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
+    missing+=("$package")
+  fi
+done
+if ((${#missing[@]})); then
+  step 'Refresh system package index' sudo apt-get update
+  step 'Install system prerequisites' sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"
+fi
+
+# Match CI's stable toolchain without updating it on every warm setup.
+if ! command -v rustup >/dev/null 2>&1; then
+  step 'Install Rust' bash -o pipefail -c \
+    'curl --proto "=https" --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable'
+elif ! rustup run stable rustc --version >/dev/null 2>&1; then
+  step 'Install stable Rust' rustup toolchain install stable --profile minimal
+fi
+step 'Select stable Rust' rustup default stable
+step 'Prepare lint tools' rustup component add --toolchain stable clippy rustfmt
+step 'Prepare release target' rustup target add --toolchain stable x86_64-unknown-linux-musl
+
+mkdir -p "$HOME/.local/bin"
+if ! command -v just >/dev/null 2>&1; then
+  step 'Install just' bash -o pipefail -c \
+    'curl -fsSL https://just.systems/install.sh | bash -s -- --to "$HOME/.local/bin"'
+fi
+if ! command -v sprite >/dev/null 2>&1; then
+  step 'Install Sprite CLI (without authentication)' bash -o pipefail -c \
+    'curl -fsSL https://sprites.dev/install.sh | bash -s -- --bin-dir "$HOME/.local/bin"'
+fi
+
+# Amp and supervised services use fresh login shells, not this script's PATH.
+marker='# spry orb tool paths'
+if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >> "$HOME/.bash_profile" <<'EOF'
+
+# spry orb tool paths
+for tool_dir in "$HOME/.cargo/bin" "$HOME/.local/bin"; do
+  case ":$PATH:" in
+    *":$tool_dir:"*) ;;
+    *) export PATH="$tool_dir:$PATH" ;;
+  esac
+done
+unset tool_dir
+EOF
+fi
+
+step 'Fetch locked dependencies' cargo fetch --locked
+step 'Warm development and test builds' cargo build --locked --all-targets
+step 'Warm static release build' cargo build --locked --release --target x86_64-unknown-linux-musl

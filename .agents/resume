@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+
+# No services or credentials to restore. Never install or authenticate on wake.
+for tool in cargo rustc just sprite musl-gcc; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    printf 'Missing %s; rerun .agents/setup to repair the orb.\n' "$tool" >&2
+    exit 1
+  fi
+done
