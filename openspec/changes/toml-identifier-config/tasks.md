@@ -1,0 +1,31 @@
+# Tasks
+
+## 1. TOML recipes and initialization
+
+- [ ] 1.1 Replace the pinned YAML parser with the maintained `toml` crate supporting TOML 1.0 and regenerate `Cargo.lock`; implement strict sprite/lifecycle/app tables in `src/config.rs`, preserving normalized phase lists. Adapt config tests to verify heterogeneous VM/host arrays, optional tables, empty identity values, multiline strings, invalid types, and unknown fields. Verify invalid-step errors identify file/phase/index and offending field/type rather than just an enum mismatch, and legacy root keys suggest the correct tables; run config tests serially.
+- [ ] 1.2 Change walk-up discovery to `.spry.toml` then `spry.toml`, with legacy-YAML migration errors and explicit-path behavior from the config delta. Emit one stderr warning before VM operations naming selected TOML and all neighboring ignored legacy recipes, including explicit configs and dry-run. Extend tests for dotted precedence, nearest TOML, child legacy versus ancestor TOML, TOML/YAML coexistence, no warning for unselected directories, extensionless explicit TOML, and missing/legacy explicit paths; run config and CLI tests.
+- [ ] 1.3 Update `src/init.rs` to write a loadable TOML starter with a literal basename, empty setup, and commented identifier/app/teardown examples. Emit a successful-write migration note on stderr when legacy YAML exists beside the output, including custom directories and force writes, naming paths and advising identity/cleanup checks. Adapt tests for escaping-sensitive basenames, custom/absolute/nested paths, force protection, YAML output rejection, unchanged legacy files, and no success note after failed writes; run init tests without Sprite or Git dependencies.
+- [ ] 1.4 Update init/config CLI help and README recipe/discovery/init sections for the new tables and TOML-only cutover. Verify the documented sample parses through the real loader and help names `.spry.toml`; include a field-by-field migration example without changing historical archived specs.
+
+## 2. Explicit identifiers across execution commands
+
+- [ ] 2.1 Replace Git-based template inputs in `src/template.rs` with optional identifier and resolved sprite/org values; require identifier grammar `[A-Za-z0-9][A-Za-z0-9_-]*` and context-specific placeholders while retaining nonrecursive raw substitution and lazy command errors. Adapt tests for exact casing, single-character validity, forbidden leading hyphen/underscore, dots/slashes/whitespace, missing values, removed Git placeholders, literal inserted braces, name self-reference, and slash rejection; run template tests.
+- [ ] 2.2 Replace `--branch` with `--identifier` in CLI arguments and setup/app/teardown options; thread the identifier through shared step execution, validate supplied values before VM operations, and replace verbose Git context with identifier context. Extend CLI/runner tests to verify flag acceptance/rejection for every command, fixed-name operation without identifier, `--sprite` override before expansion, and distinct identifier/sprite values; run CLI and runner tests serially.
+- [ ] 2.3 Remove `src/git.rs`, its module export, Git-only fixtures/tests, and unused discovery/slug helpers once all callers use identifiers. Verify no runtime Git discovery or obsolete GitInfo/branch option references remain in `src/`, and verify the remaining tests compile without Git fixtures; explicit Git commands in recipes remain allowed.
+- [ ] 2.4 Update README commands, flags, placeholders, trust/quoting guidance, and examples to use explicit identifiers. Document addressing dotted legacy VMs using literal `sprite.name` or `--sprite myapp-release-1.2`, including teardown without an unused identifier, rather than renaming resources. Verify examples distinguish identifier from VM name and explain the restricted grammar and absence of Git fallback, remembered values, checkout operations, identifier environment variables, and resume hooks. Replace the existing description of app start as "the matching resume" with independent app-control wording.
+
+## 3. Preserve lifecycle contracts
+
+- [ ] 3.1 Adapt existing setup and app tests to TOML with asymmetric phase commands. Verify missing/existing VM setup, repeated full setup, no-create, independent start/stop, empty phases, ordered mixed execution, absent identifier in unused phases, and dry-run nonmutation; run setup and app tests serially.
+- [ ] 3.2 Adapt existing teardown tests to TOML and identifier inputs. Verify ordered cleanup-before-destroy, no-destroy, missing VM, cleanup failure, unknown/missing placeholder after an earlier step, destroy failure, verbose output, dry-run without mutation, and exact targeting of a dotted legacy name via `--sprite` without an unused identifier; run teardown tests serially.
+- [ ] 3.3 Verify through CLI tests and help that resume and top-level stop remain invalid and that setup/teardown never implicitly run app controls. Keep README lifecycle descriptions aligned with these observed results.
+
+## 4. Integrated validation
+
+- [ ] 4.1 Run `cargo fmt --all -- --check`, `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 cargo test --locked -- --test-threads=1`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `cargo build --locked --release`; record decisive results and resolve failures caused by this change.
+- [ ] 4.2 Smoke-test the built CLI in temporary non-Git directories using a fake Sprite executable: generate/load TOML, select one identifier across setup/start/stop/teardown, exercise fixed `--sprite` override and expanded dry-run, and confirm legacy recipes/removed flags fail without mutation. Verify no live VM operations occur, then remove temporary fixtures.
+- [ ] 4.3 Run `npx --yes @fission-ai/openspec@1.16.0 validate toml-identifier-config --strict` and inspect the final diff for implementation/spec agreement, no resume/wake machinery, no leftover runtime YAML/Git dependencies, and no unrelated changes.
+
+## Workflow follow-up
+
+- When the implemented change is archived, refresh `openspec/specs/config/spec.md` Purpose from repo-local YAML to TOML and verify the synchronized canonical specs contain no obsolete YAML syntax or misleading scenario titles. Keep historical archived changes unchanged; revalidate the affected main specs after synchronization.
